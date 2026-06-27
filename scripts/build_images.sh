@@ -29,6 +29,10 @@ show_help() {
     echo "  -s, --sandbox  仅构建沙箱镜像"
     echo "  -c, --clean    清理所有本地镜像"
     echo "  -v, --version  显示版本信息"
+    echo ""
+    echo "环境变量（仅 --app 生效）:"
+    echo "  GOAMD64_ARG    指定 GOAMD64 等级 (v1/v2/v3/v4)，留空则自动检测 CPU"
+    echo "  AGGRESSIVE_OPT 1=启用激进优化(PGO+trimpath+-l=4+-s -w)，0=使用原 make build-prod"
     exit 0
 }
 
@@ -142,6 +146,8 @@ build_app_image() {
         --build-arg COMMIT_ID_ARG="$COMMIT_ID" \
         --build-arg BUILD_TIME_ARG="$BUILD_TIME" \
         --build-arg GO_VERSION_ARG="$GO_VERSION" \
+        --build-arg GOAMD64_ARG=${GOAMD64_ARG:-""} \
+        --build-arg AGGRESSIVE_OPT=${AGGRESSIVE_OPT:-"1"} \
         -f docker/Dockerfile.app \
         -t wechatopenai/weknora-app:latest \
         .

@@ -37,14 +37,80 @@ ARG COMMIT_ID_ARG
 ARG BUILD_TIME_ARG
 ARG GO_VERSION_ARG
 
+# Optional: GOAMD64 microarchitecture level (v1/v2/v3/v4).
+# Leave empty to auto-detect from the build host's /proc/cpuinfo
+# (Docker passes the host CPU through, so detection is accurate).
+# Set explicitly (e.g. GOAMD64_ARG=v3) to force a level.
+ARG GOAMD64_ARG=
+
+# Optional: toggle aggressive optimizations.
+# AGGRESSIVE_OPT=1 (default) enables -pgo=auto, -trimpath, -gcflags="-l=4", -ldflags="-s -w".
+# AGGRESSIVE_OPT=0 falls back to the plain `make build-prod` path.
+ARG AGGRESSIVE_OPT=1
+
 # Set build-time variables
 ENV VERSION=${VERSION_ARG}
 ENV COMMIT_ID=${COMMIT_ID_ARG}
 ENV BUILD_TIME=${BUILD_TIME_ARG}
 ENV GO_VERSION=${GO_VERSION_ARG}
 
-# Build the application with version info
-RUN --mount=type=cache,target=/go/pkg/mod make build-prod
+# Resolve the GOAMD64 level: explicit arg wins; otherwise auto-detect.
+RUN set -eux; \
+    if [ -n "$GOAMD64_ARG" ]; then \
+        echo "GOAMD64 forced to $GOAMD64_ARG via build arg"; \
+    else \
+        if grep -q 'avx2' /proc/cpuinfo \
+           && grep -q 'bmi1' /proc/cpuinfo \
+           && grep -q 'bmi2' /proc/cpuinfo \
+           && grep -q 'fma' /proc/cpuinfo \
+           && grep -q 'lzcnt' /proc/cpuinfo \
+           && grep -q 'movbe' /proc/cpuinfo; then \
+            GOAMD64_ARG=v3; \
+            echo "✅ CPU supports GOAMD64=v3 (avx2+bmi1+bmi2+fma+lzcnt+movbe)"; \
+        elif grep -q 'popcnt' /proc/cpuinfo \
+             && grep -q 'sse4_1' /proc/cpuinfo \
+             && grep -q 'sse4_2' /proc/cpuinfo \
+             && grep -q 'ssse3' /proc/cpuinfo \
+             && grep -q 'cx16' /proc/cpuinfo; then \
+            GOAMD64_ARG=v2; \
+            echo "✅ CPU supports GOAMD64=v2 (popcnt+sse4_1+sse4_2+ssse3+cx16)"; \
+        else \
+            GOAMD64_ARG=v1; \
+            echo "⚠️  CPU only supports GOAMD64=v1 (default)"; \
+        fi; \
+    fi; \
+    echo "GOAMD64_RESOLVED=$GOAMD64_ARG" > /tmp/goamd64.env
+
+# Build the application.
+# Path A (default): aggressive optimizations — PGO + trimpath + inlining tuning + stripped binary.
+# Path B: plain `make build-prod` (set AGGRESSIVE_OPT=0).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    set -eux; \
+    . /tmp/goamd64.env; \
+    if [ "$AGGRESSIVE_OPT" = "1" ]; then \
+        eval "$$(./scripts/get_version.sh env)"; \
+        LDFLAGS="$$(./scripts/get_version.sh ldflags) -X 'google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn'"; \
+        PGO_FLAG=""; \
+        if ls default.pgo >/dev/null 2>&1; then \
+            PGO_FLAG="-pgo=auto"; \
+            echo ">> Found default.pgo, enabling PGO"; \
+        else \
+            echo ">> No default.pgo found, skipping PGO (Go will not error)"; \
+        fi; \
+        echo ">> Building with aggressive optimizations (GOAMD64=$$GOAMD64_RESOLVED)"; \
+        CGO_ENABLED=1 \
+        CGO_CFLAGS="-Wno-deprecated-declarations" \
+        GOAMD64=$$GOAMD64_RESOLVED \
+        go build \
+            $$PGO_FLAG \
+            -trimpath \
+            -gcflags="-l=4" \
+            -ldflags="-w -s $$LDFLAGS" \
+            -o WeKnora ./cmd/server; \
+    else \
+        echo ">> Building with plain make build-prod"; \
+        make build-prod; \
+    fi
 RUN --mount=type=cache,target=/go/pkg/mod cp -r /go/pkg/mod/github.com/yanyiwu/ /app/yanyiwu/
 
 # Final stage

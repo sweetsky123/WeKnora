@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker-build-app docker-build-docreader docker-build-frontend docker-build-all docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama build-images build-images-app build-images-docreader build-images-frontend clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite
+.PHONY: help build run test clean docker-build-app docker-build-docreader docker-build-frontend docker-build-all docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama build-images build-images-app build-images-docreader build-images-frontend clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite build-prod build-prod-fast
 
 # Show help
 help:
@@ -63,6 +63,10 @@ help:
 	@echo "  run-lite          构建并启动 Lite 版本"
 	@echo "  package-lite      构建并打包 Lite 发行包（tarball）"
 	@echo "  package-mac-app   构建并打包 macOS 桌面应用 (.app)"
+	@echo ""
+	@echo "性能优化构建:"
+	@echo "  build-prod-fast   激进优化构建（GOAMD64 自动检测 v3/v2/v1 + PGO + trimpath + -l=4 + -s -w）"
+	@echo "                    可强制指定: make build-prod-fast GOAMD64_TARGET=v3"
 
 # Go related variables
 BINARY_NAME=WeKnora
@@ -244,6 +248,45 @@ build-prod:
 	GO_VERSION=$${GO_VERSION:-unknown}; \
 	LDFLAGS="-X 'github.com/Tencent/WeKnora/internal/handler.Version=$$VERSION' -X 'github.com/Tencent/WeKnora/internal/handler.Edition=standard' -X 'github.com/Tencent/WeKnora/internal/handler.CommitID=$$COMMIT_ID' -X 'github.com/Tencent/WeKnora/internal/handler.BuildTime=$$BUILD_TIME' -X 'github.com/Tencent/WeKnora/internal/handler.GoVersion=$$GO_VERSION' -X 'google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn'"; \
 	go build -ldflags="-w -s $$LDFLAGS" -o $(BINARY_NAME) $(MAIN_PATH)
+
+# Aggressive performance build (GOAMD64 auto-detect + PGO + trimpath + inlining tuning).
+# - GOAMD64: v3 if CPU has avx2/bmi1/bmi2/fma/lzcnt/movbe; v2 if sse4_1/sse4_2/ssse3/cx16/popcnt; else v1.
+#   Override with: make build-prod-fast GOAMD64_TARGET=v3
+# - -pgo=auto: only added when default.pgo exists in repo root.
+# - -gcflags="-l=4": more aggressive inlining budget.
+# - -trimpath: strip absolute paths from binary.
+# - -ldflags="-s -w": strip debug symbols and DWARF.
+build-prod-fast:
+	@if [ "$$(uname -m)" != "x86_64" ] && [ "$$(uname -m)" != "amd64" ]; then \
+		echo "⚠️  GOAMD64 only applies to amd64; current arch=$$(uname -m), skipping level selection"; \
+		GOAMD64_TARGET=""; \
+	elif [ -n "$$GOAMD64_TARGET" ]; then \
+		echo ">> GOAMD64 forced to $$GOAMD64_TARGET"; \
+	elif grep -q 'avx2' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'bmi1' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'bmi2' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'fma' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'lzcnt' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'movbe' /proc/cpuinfo 2>/dev/null; then \
+		GOAMD64_TARGET=v3; echo "✅ CPU supports GOAMD64=v3 (avx2+bmi1+bmi2+fma+lzcnt+movbe)"; \
+	elif grep -q 'popcnt' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'sse4_1' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'sse4_2' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'ssse3' /proc/cpuinfo 2>/dev/null \
+	     && grep -q 'cx16' /proc/cpuinfo 2>/dev/null; then \
+		GOAMD64_TARGET=v2; echo "✅ CPU supports GOAMD64=v2 (popcnt+sse4_1+sse4_2+ssse3+cx16)"; \
+	else \
+		GOAMD64_TARGET=v1; echo "⚠️  CPU only supports GOAMD64=v1 (default)"; \
+	fi; \
+	eval "$$(./scripts/get_version.sh env)"; \
+	LDFLAGS="$$(./scripts/get_version.sh ldflags) -X 'google.golang.org/protobuf/reflect/protoregistry.conflictPolicy=warn'"; \
+	PGO_FLAG=""; \
+	if [ -f default.pgo ]; then PGO_FLAG="-pgo=auto"; echo ">> Found default.pgo, enabling PGO"; fi; \
+	CGO_ENABLED=1 \
+	CGO_CFLAGS="-Wno-deprecated-declarations" \
+	CGO_LDFLAGS="$$(if [ "$$(uname)" = 'Darwin' ]; then echo '-Wl,-no_warn_duplicate_libraries'; fi)" \
+	GOAMD64=$$GOAMD64_TARGET \
+	go build $$PGO_FLAG -trimpath -gcflags="-l=4" -ldflags="-w -s $$LDFLAGS" -o $(BINARY_NAME) $(MAIN_PATH)
 
 # Build Lite version (single binary, SQLite + in-memory queue)
 # 会先构建前端到 web/，再构建 Go 二进制；SKIP_FRONTEND=1 可跳过前端
