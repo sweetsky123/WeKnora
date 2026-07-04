@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -15,9 +16,14 @@ import (
 // registration (RFC 7591).
 const clientRegistrationName = "WeKnora"
 
+// oauthCallbackTimeout bounds token exchange after the browser lands on the
+// public callback route. The Gin request context is canceled once the client
+// receives the redirect, so CompleteAuthorization must detach from it.
+const oauthCallbackTimeout = 60 * time.Second
+
 // OAuthManager orchestrates the MCP OAuth2 authorization-code flow:
 // discovery, dynamic client registration, the authorize redirect, and the
-// callback code exchange. Tokens are persisted per (tenant, user, service);
+// callback code exchange. Tokens are persisted per (tenant, principal, service);
 // the registered client is persisted per (tenant, service) and reused.
 type OAuthManager struct {
 	repo        interfaces.MCPOAuthRepository
@@ -39,9 +45,9 @@ func NewOAuthManager(
 	}
 }
 
-// newHandler builds an OAuth handler bound to a service + per-user token store.
+// newHandler builds an OAuth handler bound to a service + per-principal token store.
 func (m *OAuthManager) newHandler(
-	ctx context.Context, service *types.MCPService, tenantID uint64, userID, redirectURI string,
+	ctx context.Context, service *types.MCPService, tenantID uint64, principal types.Principal, redirectURI string,
 ) (*transport.OAuthHandler, error) {
 	if service.URL == nil || *service.URL == "" {
 		return nil, fmt.Errorf("MCP service URL is required for OAuth")
@@ -49,7 +55,7 @@ func (m *OAuthManager) newHandler(
 	cfg := transport.OAuthConfig{
 		RedirectURI:           redirectURI,
 		Scopes:                service.AuthConfig.Scopes,
-		TokenStore:            newDBTokenStore(m.repo, tenantID, userID, service.ID),
+		TokenStore:            newDBTokenStore(m.repo, tenantID, principal, service.ID),
 		PKCEEnabled:           true,
 		AuthServerMetadataURL: service.AuthConfig.AuthServerMetadataURL,
 	}
@@ -70,13 +76,18 @@ func (m *OAuthManager) StartAuthorization(
 	ctx context.Context,
 	service *types.MCPService,
 	tenantID uint64,
-	userID, redirectURI, frontendRedirect string,
+	principal types.Principal,
+	redirectURI, frontendRedirect string,
 ) (string, error) {
 	if !service.AuthConfig.IsOAuth() {
 		return "", fmt.Errorf("MCP service %s does not use OAuth", service.ID)
 	}
+	principal = principal.Normalize()
+	if !principal.Valid() {
+		return "", fmt.Errorf("principal context is required to authorize OAuth MCP service %s", service.ID)
+	}
 
-	h, err := m.newHandler(ctx, service, tenantID, userID, redirectURI)
+	h, err := m.newHandler(ctx, service, tenantID, principal, redirectURI)
 	if err != nil {
 		return "", err
 	}
@@ -118,7 +129,8 @@ func (m *OAuthManager) StartAuthorization(
 
 	if err := m.states.Put(ctx, state, OAuthState{
 		TenantID:         tenantID,
-		UserID:           userID,
+		UserID:           principal.StorageID(),
+		Principal:        principal,
 		ServiceID:        service.ID,
 		CodeVerifier:     verifier,
 		ClientID:         h.GetClientID(),
@@ -131,17 +143,47 @@ func (m *OAuthManager) StartAuthorization(
 	return authURL, nil
 }
 
+// StartAuthorizationForService loads the MCP service by ID and starts the
+// authorization-code flow, returning the URL the user must open. It is a
+// convenience for callers (e.g. IM channels) that only hold a service ID and
+// cannot reach the MCP service lookup directly.
+func (m *OAuthManager) StartAuthorizationForService(
+	ctx context.Context,
+	tenantID uint64,
+	principal types.Principal,
+	serviceID, redirectURI, frontendRedirect string,
+) (string, error) {
+	service, err := m.serviceRepo.GetByID(ctx, tenantID, serviceID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load MCP service: %w", err)
+	}
+	if service == nil {
+		return "", fmt.Errorf("MCP service not found")
+	}
+	return m.StartAuthorization(ctx, service, tenantID, principal, redirectURI, frontendRedirect)
+}
+
 // CompleteAuthorization handles the provider callback: it validates state,
 // exchanges the code for tokens (PKCE), and persists the per-user token.
 // Returns the frontend redirect URL recorded at StartAuthorization time.
 func (m *OAuthManager) CompleteAuthorization(
 	ctx context.Context, state, code string,
 ) (frontendRedirect string, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthCallbackTimeout)
+	defer cancel()
+
 	st, err := m.states.Take(ctx, state)
 	if err != nil {
 		return "", err
 	}
 	frontendRedirect = st.FrontendRedirect
+	principal := st.Principal.Normalize()
+	if !principal.Valid() && st.UserID != "" {
+		principal = types.Principal{Type: types.PrincipalWebUser, ID: st.UserID}.Normalize()
+	}
+	if !principal.Valid() {
+		return frontendRedirect, fmt.Errorf("principal context is missing from OAuth state")
+	}
 
 	service, err := m.serviceRepo.GetByID(ctx, st.TenantID, st.ServiceID)
 	if err != nil {
@@ -151,7 +193,7 @@ func (m *OAuthManager) CompleteAuthorization(
 		return frontendRedirect, fmt.Errorf("MCP service not found")
 	}
 
-	h, err := m.newHandler(ctx, service, st.TenantID, st.UserID, st.RedirectURI)
+	h, err := m.newHandler(ctx, service, st.TenantID, principal, st.RedirectURI)
 	if err != nil {
 		return frontendRedirect, err
 	}
@@ -164,26 +206,26 @@ func (m *OAuthManager) CompleteAuthorization(
 	}
 	// ProcessAuthorizationResponse persists the token via the TokenStore.
 	logger.GetLogger(ctx).Infof(
-		"MCP OAuth authorized: service=%s user=%s", st.ServiceID, st.UserID,
+		"MCP OAuth authorized: service=%s principal=%s", st.ServiceID, principal.StorageID(),
 	)
 	return frontendRedirect, nil
 }
 
-// IsAuthorized reports whether the given user has a stored (non-empty) token
+// IsAuthorized reports whether the given principal has a stored (non-empty) token
 // for the service.
 func (m *OAuthManager) IsAuthorized(
-	ctx context.Context, tenantID uint64, userID, serviceID string,
+	ctx context.Context, tenantID uint64, principal types.Principal, serviceID string,
 ) (bool, error) {
-	tok, err := m.repo.GetToken(ctx, tenantID, userID, serviceID)
+	tok, err := m.repo.GetTokenForPrincipal(ctx, tenantID, principal, serviceID)
 	if err != nil {
 		return false, err
 	}
 	return tok != nil && tok.AccessToken != "", nil
 }
 
-// Revoke removes the user's stored token for the service.
+// Revoke removes the principal's stored token for the service.
 func (m *OAuthManager) Revoke(
-	ctx context.Context, tenantID uint64, userID, serviceID string,
+	ctx context.Context, tenantID uint64, principal types.Principal, serviceID string,
 ) error {
-	return m.repo.DeleteToken(ctx, tenantID, userID, serviceID)
+	return m.repo.DeleteTokenForPrincipal(ctx, tenantID, principal, serviceID)
 }

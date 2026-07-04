@@ -94,6 +94,15 @@
                                     class="menu-pending-badge"
                                     :title="t('organization.settings.pendingJoinRequestsBadge')">{{
                                         orgStore.totalPendingJoinRequestCount }}</span>
+                                <span v-if="item.path === 'integrations'" class="integration-preview"
+                                    aria-hidden="true">
+                                    <span v-for="(preview, idx) in integrationPreviewItems" :key="preview.key"
+                                        class="integration-preview__item" :style="{ zIndex: idx + 1 }">
+                                        <t-icon v-if="preview.icon.type === 'icon'" :name="preview.icon.name"
+                                            size="13px" />
+                                        <span v-else class="integration-preview__emoji">{{ preview.icon.value }}</span>
+                                    </span>
+                                </span>
                             </template>
                         </div>
                     </div>
@@ -248,8 +257,17 @@ import UserMenu from '@/components/UserMenu.vue';
 import TenantSelector from '@/components/TenantSelector.vue';
 import { useI18n } from 'vue-i18n';
 import { getSystemInfo } from '@/api/system';
+import { INTEGRATION_PREVIEW_ITEMS, INTEGRATION_TAB_MIN_ROLE } from '@/config/integrations';
 
 const chatResources = useChatResourcesStore();
+const integrationPreviewItems = computed(() =>
+    INTEGRATION_PREVIEW_ITEMS.filter((item) => {
+        const min = INTEGRATION_TAB_MIN_ROLE[item.key];
+        if (!min) return true;
+        if (authStore.canAccessAllTenants) return true;
+        return authStore.hasRole(min);
+    }),
+);
 // Platform logos reused from IMChannelsOverviewPanel — keeps the session list
 // visually consistent with the channels admin view.
 import wecomLogo from '@/assets/img/im/wecom.svg';
@@ -259,7 +277,7 @@ import telegramLogo from '@/assets/img/im/telegram.svg';
 import dingtalkLogo from '@/assets/img/im/dingtalk.svg';
 import mattermostLogo from '@/assets/img/im/mattermost.svg';
 import wechatLogo from '@/assets/img/im/wechat.svg';
-import qqbotLogo from '@/assets/img/im/qqbot.svg';
+import qqbotLogo from '@/assets/img/im/qqbot.png';
 
 const PLATFORM_LOGO: Record<string, string> = {
     wecom: wecomLogo,
@@ -464,6 +482,7 @@ const filteredGroupedSessions = computed(() => {
         bucket.items.map((item) => ({
             ...item,
             path: `chat/${item.id}`,
+            title: item.title || '',
         })),
         dateBucketLabels.value,
         (session) => classifyDateBucket(session.updated_at || session.created_at),
@@ -1885,6 +1904,48 @@ const onDragHandleMouseDown = (e: MouseEvent) => {
     line-height: 18px;
     text-align: center;
     flex-shrink: 0;
+}
+
+.integration-preview {
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    flex-shrink: 0;
+    width: 0;
+    overflow: hidden;
+    pointer-events: none;
+
+    .menu_item:hover & {
+        width: auto;
+    }
+
+    &__item {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        flex-shrink: 0;
+        border-radius: 50%;
+        background: var(--td-bg-color-container);
+        border: 2px solid var(--td-bg-color-sidebar);
+        box-sizing: border-box;
+        color: var(--td-text-color-primary);
+
+        &:not(:first-child) {
+            margin-left: -5px;
+        }
+
+        :deep(.t-icon) {
+            display: block;
+        }
+    }
+
+    &__emoji {
+        font-size: 12px;
+        line-height: 1;
+    }
 }
 
 .menu_box {

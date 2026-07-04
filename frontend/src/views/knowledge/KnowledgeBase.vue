@@ -512,8 +512,8 @@ const tagPage = ref(1);
 const tagHasMore = ref(false);
 const tagLoadingMore = ref(false);
 const tagTotal = ref(0);
-let tagSearchDebounce: ReturnType<typeof setTimeout> | null = null;
-let docSearchDebounce: ReturnType<typeof setTimeout> | null = null;
+let tagSearchDebounce: number | null = null;
+let docSearchDebounce: number | null = null;
 const docSearchKeyword = ref('');
 const selectedFileType = ref('');
 const fileTypeOptions = computed(() => [
@@ -961,7 +961,7 @@ watch(selectedTagIds, (newVal, oldVal) => {
 watch(tagSearchQuery, (newVal, oldVal) => {
   if (newVal === oldVal) return;
   if (tagSearchDebounce) {
-    clearTimeout(tagSearchDebounce);
+    window.clearTimeout(tagSearchDebounce);
   }
   tagSearchDebounce = window.setTimeout(() => {
     if (kbId.value) {
@@ -974,7 +974,7 @@ watch(tagSearchQuery, (newVal, oldVal) => {
 watch(docSearchKeyword, (newVal, oldVal) => {
   if (newVal === oldVal) return;
   if (docSearchDebounce) {
-    clearTimeout(docSearchDebounce);
+    window.clearTimeout(docSearchDebounce);
   }
   docSearchDebounce = window.setTimeout(() => {
     if (kbId.value) {
@@ -1226,35 +1226,121 @@ const openSourceDoc = (knowledgeId: string) => {
   getCardDetails({ id: knowledgeId });
 };
 
-// 悬停知识卡片时跟随鼠标显示详情气泡
+// 悬停知识卡片时显示详情气泡（基于卡片位置定位）
 const hoveredCardItem = ref<KnowledgeCard | null>(null);
 const cardPopoverPos = ref({ x: 0, y: 0 });
-const CARD_POPOVER_OFFSET = 16;
+const CARD_POPOVER_OFFSET = 12;
+const CARD_POPOVER_ESTIMATED_WIDTH = 360;
+const CARD_POPOVER_ESTIMATED_HEIGHT = 300;
 const cardHoverShowDelay = 300;
 let cardHoverTimer: ReturnType<typeof setTimeout> | null = null;
+let cardPopoverElement: HTMLElement | null = null;
+
+// 根据卡片位置计算气泡位置（优先右侧，自动避开边界）
+const calculatePopoverPositionFromCard = (cardElement: HTMLElement): { x: number; y: number } => {
+  const cardRect = cardElement.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  // 获取实际气泡尺寸
+  let popoverWidth = CARD_POPOVER_ESTIMATED_WIDTH;
+  let popoverHeight = CARD_POPOVER_ESTIMATED_HEIGHT;
+
+  if (cardPopoverElement) {
+    const rect = cardPopoverElement.getBoundingClientRect();
+    if (rect.width > 0) popoverWidth = rect.width;
+    if (rect.height > 0) popoverHeight = rect.height;
+  }
+
+  let x = 0;
+  let y = 0;
+
+  // 策略1：优先尝试放在卡片右侧
+  const rightX = cardRect.right + CARD_POPOVER_OFFSET;
+  if (rightX + popoverWidth <= viewportWidth - 10) {
+    x = rightX;
+    y = cardRect.top;
+    // 确保不超出底部
+    if (y + popoverHeight > viewportHeight - 10) {
+      y = viewportHeight - popoverHeight - 10;
+    }
+    // 确保不超出顶部
+    y = Math.max(10, y);
+    return { x, y };
+  }
+
+  // 策略2：尝试放在卡片左侧
+  const leftX = cardRect.left - popoverWidth - CARD_POPOVER_OFFSET;
+  if (leftX >= 10) {
+    x = leftX;
+    y = cardRect.top;
+    // 确保不超出底部
+    if (y + popoverHeight > viewportHeight - 10) {
+      y = viewportHeight - popoverHeight - 10;
+    }
+    // 确保不超出顶部
+    y = Math.max(10, y);
+    return { x, y };
+  }
+
+  // 策略3：尝试放在卡片下方
+  const bottomY = cardRect.bottom + CARD_POPOVER_OFFSET;
+  if (bottomY + popoverHeight <= viewportHeight - 10) {
+    y = bottomY;
+    x = cardRect.left;
+    // 确保不超出右边界
+    if (x + popoverWidth > viewportWidth - 10) {
+      x = viewportWidth - popoverWidth - 10;
+    }
+    // 确保不超出左边界
+    x = Math.max(10, x);
+    return { x, y };
+  }
+
+  // 策略4：放在卡片上方
+  const topY = cardRect.top - popoverHeight - CARD_POPOVER_OFFSET;
+  y = Math.max(10, topY);
+  x = cardRect.left;
+  // 确保不超出右边界
+  if (x + popoverWidth > viewportWidth - 10) {
+    x = viewportWidth - popoverWidth - 10;
+  }
+  // 确保不超出左边界
+  x = Math.max(10, x);
+
+  return { x, y };
+};
 
 const onCardMouseEnter = (ev: MouseEvent, item: KnowledgeCard) => {
   if (cardHoverTimer) {
     clearTimeout(cardHoverTimer);
     cardHoverTimer = null;
   }
+
+  const cardElement = (ev.currentTarget as HTMLElement);
+
   cardHoverTimer = setTimeout(() => {
     cardHoverTimer = null;
     hoveredCardItem.value = item;
-    cardPopoverPos.value = {
-      x: ev.clientX + CARD_POPOVER_OFFSET,
-      y: ev.clientY + CARD_POPOVER_OFFSET,
-    };
+
+    // 基于卡片位置计算气泡位置
+    const pos = calculatePopoverPositionFromCard(cardElement);
+    cardPopoverPos.value = pos;
+
+    // 获取实际元素后精确计算
+    nextTick(() => {
+      cardPopoverElement = document.querySelector('.knowledge-card-hover-popover') as HTMLElement;
+      if (cardPopoverElement) {
+        const refinedPos = calculatePopoverPositionFromCard(cardElement);
+        cardPopoverPos.value = refinedPos;
+      }
+    });
   }, cardHoverShowDelay);
 };
 
+// 鼠标在卡片上移动时不更新气泡位置
 const onCardMouseMove = (ev: MouseEvent) => {
-  if (hoveredCardItem.value) {
-    cardPopoverPos.value = {
-      x: ev.clientX + CARD_POPOVER_OFFSET,
-      y: ev.clientY + CARD_POPOVER_OFFSET,
-    };
-  }
+  // 保持气泡固定在卡片旁边
 };
 
 const onCardMouseLeave = () => {
@@ -1263,6 +1349,7 @@ const onCardMouseLeave = () => {
     cardHoverTimer = null;
   }
   hoveredCardItem.value = null;
+  cardPopoverElement = null;
 };
 
 const closeCardMoreMenu = (index: number) => {
@@ -2322,7 +2409,7 @@ async function createNewSession(value: string): Promise<void> {
                           <div v-if="canEdit && batchMode" class="card-nav-check" @click.stop>
                             <t-checkbox class="card-select-checkbox" size="small" :checked="selectedIds.has(item.id)"
                               :title="item.file_name"
-                              @change="(checked, ctx) => onCardGridCheckboxChange(item.id, checked, ctx)" />
+                              @change="(checked: boolean, ctx?: { e?: Event }) => onCardGridCheckboxChange(item.id, checked, ctx)" />
                           </div>
                           <span class="card-content-title" :title="item.file_name">{{ item.file_name }}</span>
                           <t-popup v-if="canEdit" v-model="item.isMore" overlayClassName="card-more"
@@ -4145,6 +4232,13 @@ async function createNewSession(value: string): Promise<void> {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   font-family: var(--app-font-family);
   transition: opacity 0.15s ease;
+  will-change: transform;
+
+  /* 防止气泡内容抖动 */
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
 
   .card-popover-title {
     font-size: 14px;

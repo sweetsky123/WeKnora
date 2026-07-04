@@ -85,7 +85,17 @@
                   :mcp-tool-name="event.mcp_tool_name || ''" :description="event.description"
                   :args-json="event.args_json" :timeout-seconds="event.timeout_seconds"
                   :requested-at="event.requested_at" :resolved="event.resolved" :approved="event.approved"
-                  :resolve-reason="event.resolve_reason" />
+                  :resolve-reason="event.resolve_reason" v-bind="embedAuthProps" />
+              </div>
+
+              <!-- MCP OAuth in-conversation authorization prompt -->
+              <div v-else-if="event.type === 'mcp_oauth_required'" class="tool-event">
+                <McpOAuthCard :pending-id="event.pending_id" :service-id="event.service_id || ''"
+                  :service-name="event.service_name || ''" :mcp-tool-name="event.mcp_tool_name || ''"
+                  :timeout-seconds="event.timeout_seconds" :requested-at="event.requested_at"
+                  :resolved="event.resolved" :authorized="event.authorized"
+                  :resolve-reason="event.resolve_reason" :timed-out="event.timed_out" :canceled="event.canceled"
+                  v-bind="embedAuthProps" />
               </div>
 
               <!-- Tool Call Event (non-thinking) -->
@@ -231,7 +241,16 @@
               <ToolApprovalCard :pending-id="event.pending_id" :service-name="event.service_name || ''"
                 :mcp-tool-name="event.mcp_tool_name || ''" :description="event.description" :args-json="event.args_json"
                 :timeout-seconds="event.timeout_seconds" :requested-at="event.requested_at" :resolved="event.resolved"
-                :approved="event.approved" :resolve-reason="event.resolve_reason" />
+                :approved="event.approved" :resolve-reason="event.resolve_reason" v-bind="embedAuthProps" />
+            </div>
+
+            <!-- MCP OAuth in-conversation authorization prompt -->
+            <div v-else-if="event.type === 'mcp_oauth_required'" class="tool-event">
+              <McpOAuthCard :pending-id="event.pending_id" :service-id="event.service_id || ''"
+                :service-name="event.service_name || ''" :mcp-tool-name="event.mcp_tool_name || ''"
+                :timeout-seconds="event.timeout_seconds" :requested-at="event.requested_at" :resolved="event.resolved"
+                :authorized="event.authorized" :resolve-reason="event.resolve_reason" :timed-out="event.timed_out"
+                :canceled="event.canceled" v-bind="embedAuthProps" />
             </div>
 
             <!-- Thinking Tool Call -->
@@ -419,6 +438,7 @@ import { marked } from 'marked';
 import 'katex/dist/katex.min.css';
 import ToolResultRenderer from './ToolResultRenderer.vue';
 import ToolApprovalCard from './ToolApprovalCard.vue';
+import McpOAuthCard from './McpOAuthCard.vue';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
 import picturePreview from '@/components/picture-preview.vue';
@@ -629,7 +649,8 @@ const wikiDrawerContent = computed(() => {
     return `<a href="#" class="wiki-content-link citation-wiki" data-slug="${escapeHtml(slug)}">${escapeHtml(display)}</a>`;
   });
 
-  return wrapChatMarkdownTables(marked.parse(preprocessed, { breaks: true, async: false }) as string);
+  const html = marked.parse(preprocessed, { breaks: true, async: false }) as string;
+  return sanitizeMarkdownHTML(wrapChatMarkdownTables(html));
 });
 
 watch(wikiDrawerContent, async () => {
@@ -699,6 +720,7 @@ interface SessionData {
   isAgentMode?: boolean;
   agentEventStream?: any[];
   knowledge_references?: any[];
+  [key: string]: unknown;
 }
 
 const props = defineProps<{
@@ -708,8 +730,19 @@ const props = defineProps<{
   embeddedMode?: boolean;
   embedChannelId?: string;
   embedToken?: string;
+  embedSessionSig?: string;
+  embedVisitorId?: string;
   ragMode?: boolean;
 }>();
+
+const embedAuthProps = computed(() => ({
+  embeddedMode: props.embeddedMode,
+  embedChannelId: props.embedChannelId,
+  embedToken: props.embedToken,
+  embedSessionId: props.sessionId,
+  embedSessionSig: props.embedSessionSig,
+  embedVisitorId: props.embedVisitorId,
+}));
 
 const showRequestInfo = computed(
   () => !props.embeddedMode && !!(props.session?.request_id || props.session?.id),
@@ -1405,6 +1438,9 @@ const getEventKey = (event: any, index: number): string => {
   if (event.type === 'tool_approval_required' && event.pending_id) {
     return `approval-${event.pending_id}`;
   }
+  if (event.type === 'mcp_oauth_required' && event.pending_id) {
+    return `mcp-oauth-${event.pending_id}`;
+  }
   return `event-${index}-${event.type || 'unknown'}`;
 };
 
@@ -1583,7 +1619,7 @@ const onRootClick = (e: Event) => {
     const slug = wikiEl.getAttribute('data-slug');
 
     // Determine the relevant KB ID
-    const kbId = getKbIdForWiki(slug);
+    const kbId = getKbIdForWiki(slug || '');
 
     if (kbId && slug) {
       openWikiDrawer(kbId, slug);
