@@ -12,6 +12,7 @@ if [ -z "${VITE_FRONTEND_COMMIT:-}" ]; then
 fi
 
 export VITE_IS_DOCKER="${VITE_IS_DOCKER:-true}"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
 
 cd "$PROJECT_ROOT/frontend"
 npm ci

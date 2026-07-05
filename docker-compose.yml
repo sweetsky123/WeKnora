@@ -1,3 +1,15 @@
+networks:
+  WeKnora:
+    name: WeKnora
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - gateway: ${SUBNET_PREFIX:?SUBNET_PREFIX required}.1
+          subnet: ${SUBNET_PREFIX}.0/24
+    driver_opts:
+      com.docker.network.bridge.name: WeKnora
+
 services:
   frontend:
     image: wechatopenai/weknora-ui:${WEKNORA_VERSION:-latest}
@@ -5,8 +17,8 @@ services:
     build:
       context: ./frontend
     container_name: WeKnora-frontend
-    ports:
-      - "${FRONTEND_PORT:-80}:80"
+    expose:
+      - "80"
     environment:
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
       - APP_HOST=${APP_HOST:-app}
@@ -21,7 +33,8 @@ services:
       app:
         condition: service_healthy
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.10
     restart: unless-stopped
 
   app:
@@ -32,8 +45,8 @@ services:
       args:
         - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
     container_name: WeKnora-app
-    ports:
-      - "${APP_PORT:-8080}:8080"
+    expose:
+      - "8080"
     volumes:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro
@@ -101,12 +114,12 @@ services:
       - ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME:-}
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:-}
       - ELASTICSEARCH_INDEX=${ELASTICSEARCH_INDEX:-}
-      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
-      - QDRANT_PORT=${QDRANT_PORT:-6334}
+      - QDRANT_HOST=${QDRANT_HOST:-}
+      - QDRANT_PORT=${QDRANT_PORT:-}
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-weknora_embeddings}
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - QDRANT_USE_TLS=${QDRANT_USE_TLS:-false}
-      - MILVUS_ADDRESS=${MILVUS_ADDRESS:-milvus:19530}
+      - MILVUS_ADDRESS=${MILVUS_ADDRESS:-}
       - MILVUS_COLLECTION=${MILVUS_COLLECTION:-weknora_embeddings}
       - MILVUS_METRIC_TYPE=${MILVUS_METRIC_TYPE:-IP}
       - DOCREADER_ADDR=${DOCREADER_ADDR:-docreader:50051}
@@ -118,8 +131,8 @@ services:
       - GRPC_TLS_CA=${GRPC_TLS_CA:-}
       - GRPC_TLS_SERVER_NAME=${GRPC_TLS_SERVER_NAME:-}
       - GRPC_AUTH_TOKEN=${GRPC_AUTH_TOKEN:-}
-      - WEAVIATE_HOST=${WEAVIATE_HOST:-weaviate:8080}
-      - WEAVIATE_GRPC_ADDRESS=${WEAVIATE_GRPC_ADDRESS:-weaviate:50051}
+      - WEAVIATE_HOST=${WEAVIATE_HOST:-}
+      - WEAVIATE_GRPC_ADDRESS=${WEAVIATE_GRPC_ADDRESS:-}
       - WEAVIATE_SCHEME=${WEAVIATE_SCHEME:-http}
       - WEAVIATE_AUTH_ENABLED=${WEAVIATE_AUTH_ENABLED:-false}
       - WEAVIATE_API_KEY=${WEAVIATE_API_KEY:-}
@@ -133,7 +146,7 @@ services:
       - STORAGE_TYPE=${STORAGE_TYPE:-}
       - LOCAL_STORAGE_BASE_DIR=${LOCAL_STORAGE_BASE_DIR:-}
       - AUTO_RECOVER_DIRTY=${AUTO_RECOVER_DIRTY:-true}
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-}
       - MINIO_ACCESS_KEY_ID=${MINIO_ACCESS_KEY_ID:-minioadmin}
       - MINIO_SECRET_ACCESS_KEY=${MINIO_SECRET_ACCESS_KEY:-minioadmin}
       - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-}
@@ -203,7 +216,8 @@ services:
       docreader:
         condition: service_healthy
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.11
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -215,8 +229,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.sandbox
-    profiles:
-      - full
+    networks:
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.12
     command: ["true"]
     restart: "no"
 
@@ -264,7 +279,8 @@ services:
       retries: 3
       start_period: 60s
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.13
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -284,7 +300,8 @@ services:
     environment:
       - ODL_HYBRID_EXTRA_ARGS=${ODL_HYBRID_EXTRA_ARGS:---no-ocr}
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.14
     restart: unless-stopped
 
   # 修改的PostgreSQL配置
@@ -298,7 +315,8 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.15
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 10s # 增加时间间隔
@@ -315,7 +333,8 @@ services:
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     restart: always
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.16
 
   # One-shot init: copy the read-only template settings.yml into a named volume
   # before searxng starts. Necessary because the searxng entrypoint sed-replaces
@@ -331,18 +350,16 @@ services:
       - searxng_config:/etc/searxng
     restart: "no"
     networks:
-      - WeKnora-network
-    profiles:
-      - searxng
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.17
 
   searxng:
     image: searxng/searxng:latest
     container_name: WeKnora-searxng
     # Bind to loopback by default; override SEARXNG_BIND=0.0.0.0 only after
     # rotating SEARXNG_SECRET and (optionally) re-enabling limiter in settings.yml.
-    ports:
-      - "${SEARXNG_BIND:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+    expose:
+      - "8080"
     volumes:
       - searxng_config:/etc/searxng
     environment:
@@ -364,33 +381,8 @@ services:
       searxng-init:
         condition: service_completed_successfully
     networks:
-      - WeKnora-network
-    profiles:
-      - searxng
-      - full
-
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: WeKnora-minio
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY_ID:-minioadmin}
-      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_ACCESS_KEY:-minioadmin}
-    command: server --console-address ":9001" /data
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - WeKnora-network
-    profiles:
-      - minio
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.18
 
   neo4j:
     image: neo4j:2025.10.1
@@ -403,81 +395,14 @@ services:
       - NEO4J_apoc_import_file_enabled=true
       - NEO4J_apoc_import_file_use__neo4j__config=true
       - NEO4JLABS_PLUGINS=["apoc"]
-    ports:
-      - "7474:7474"
-      - "7687:7687"
+    expose:
+      - "7474"
+      - "7687"
     restart: always
     networks:
-      - WeKnora-network
-    profiles:
-      - neo4j
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.20
 
-  qdrant:
-    image: qdrant/qdrant:v1.16.2
-    container_name: WeKnora-qdrant
-    ports:
-      - "${QDRANT_REST_PORT:-6333}:6333"
-      - "${QDRANT_PORT:-6334}:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    networks:
-      - WeKnora-network
-    restart: unless-stopped
-    profiles:
-      - qdrant
-      - full
-
-  milvus:
-    image: milvusdb/milvus:v2.6.11
-    container_name: WeKnora-milvus
-    security_opt:
-      - seccomp:unconfined
-    command: ["milvus", "run", "standalone"]
-    environment:
-      - ETCD_USE_EMBED=true
-      - ETCD_DATA_DIR=/var/lib/milvus/etcd
-      - COMMON_STORAGETYPE=local
-      - DEPLOY_MODE=STANDALONE
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      start_period: 90s
-      timeout: 20s
-      retries: 3
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    volumes:
-      - milvus_data:/var/lib/milvus
-    networks:
-      - WeKnora-network
-    restart: unless-stopped
-    profiles:
-      - milvus
-
-  weaviate:
-    image: semitechnologies/weaviate:1.28.4
-    container_name: WeKnora-weaviate
-    environment:
-      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
-      - CLUSTER_HOSTNAME=node1
-      - DEFAULT_VECTORIZER_MODULE=none
-      - ENABLE_MODULES=none
-      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
-      - CLUSTER_GOSSIP_BIND_PORT=7000
-      - CLUSTER_DATA_BIND_PORT=7001
-      - RAFT_BOOTSTRAP_EXPECT=1
-    ports:
-      - "9035:8080"
-      - "50052:50051"
-    volumes:
-      - weaviate_data:/var/lib/weaviate
-    networks:
-      - WeKnora-network
-    restart: unless-stopped
-    profiles:
-      - weaviate
 
   # ---------------------------------------------------------------------------
   # Apache Doris 4.1（FE + BE 单实例 standalone 部署，opt-in via `--profile doris`）
@@ -502,14 +427,15 @@ services:
     environment:
       - FE_SERVERS=fe1:doris-fe:9010
       - FE_ID=1
-    ports:
-      - "${DORIS_FE_HTTP_PORT:-8030}:8030"
-      - "${DORIS_FE_MYSQL_PORT:-9030}:9030"
+    expose:
+      - "8030"
+      - "9030"
     volumes:
       - doris_fe_meta:/opt/apache-doris/fe/doris-meta
       - doris_fe_log:/opt/apache-doris/fe/log
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.24
     restart: unless-stopped
     profiles:
       - doris
@@ -523,13 +449,14 @@ services:
       - BE_ADDR=doris-be:9050
     depends_on:
       - doris-fe
-    ports:
-      - "${DORIS_BE_HTTP_PORT:-8040}:8040"
+    expose:
+      - "8040"
     volumes:
       - doris_be_storage:/opt/apache-doris/be/storage
       - doris_be_log:/opt/apache-doris/be/log
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.25
     restart: unless-stopped
     profiles:
       - doris
@@ -537,17 +464,20 @@ services:
   dex:
     image: dexidp/dex:latest
     container_name: dex
-    ports:
-      - "5556:5556"
+    expose:
+      - "5556"
     volumes:
       - ./misc/dex-config.yaml:/etc/dex/config.yaml
     command: ["dex", "serve", "/etc/dex/config.yaml"]
+    networks:
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.26
     profiles:
       - dex
       - full
 
   # ---------------------------------------------------------------------------
-  # Langfuse 自建可观测栈 (opt-in via `--profile langfuse`)
+  # Langfuse 自建可观测栈（当前默认随主栈启动）
   #
   # 为了最小化资源占用，Langfuse 会复用 WeKnora 已有的 postgres 和 redis：
   #   - postgres：在 WeKnora-postgres 中创建独立的 "langfuse" 数据库
@@ -555,12 +485,10 @@ services:
   # 需要新增的只有 Langfuse 应用自身 + ClickHouse（OLAP）+ 专用 MinIO（事件/媒体 S3）。
   #
   # 启用方式：
-  #   docker compose --profile langfuse up -d
+  #   docker compose up -d
   # 启用后：
-  #   1. Langfuse UI: http://localhost:3000 （首次访问注册管理员并在 Settings → API Keys 生成 key）
-  #   2. 在 .env 里把 LANGFUSE_HOST 改成 http://langfuse-web:3000（容器间通信）
-  #      并填入刚生成的 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
-  #   3. 重启 app 容器：docker compose up -d app
+  #   1. Langfuse 组件默认随主栈启动
+  #   2. 建议在 .env 预先填好 INIT_* / PUBLIC_KEY / SECRET_KEY，避免首次人工初始化
   # 相关默认密码已写成占位符，生产部署务必用 openssl rand 重新生成！
   # ---------------------------------------------------------------------------
 
@@ -593,11 +521,9 @@ services:
         fi
         echo "[langfuse-db-init] done."
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.27
     restart: "no"
-    profiles:
-      - langfuse
-      - full
 
   langfuse-clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -618,10 +544,8 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - WeKnora-network
-    profiles:
-      - langfuse
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.28
 
   langfuse-minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -633,11 +557,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${LANGFUSE_MINIO_USER:-langfuseminio}
       MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-langfuseminiosecret}
-    ports:
-      # 9100：S3 API（浏览器上传媒体时会直连此端口，必须对外暴露）
-      - "${LANGFUSE_MINIO_S3_PORT:-9100}:9000"
-      # 9101：MinIO 控制台（可选，方便排障）
-      - "${LANGFUSE_MINIO_CONSOLE_PORT:-9101}:9001"
+    expose:
+      - "9000"
+      - "9001"
     volumes:
       - langfuse_minio_data:/data
     healthcheck:
@@ -646,10 +568,8 @@ services:
       timeout: 10s
       retries: 5
     networks:
-      - WeKnora-network
-    profiles:
-      - langfuse
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.29
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
@@ -718,18 +638,16 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
     networks:
-      - WeKnora-network
-    profiles:
-      - langfuse
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.30
 
   langfuse-web:
     image: langfuse/langfuse:3
     container_name: WeKnora-langfuse-web
     restart: unless-stopped
     depends_on: *langfuse-depends-on
-    ports:
-      - "${LANGFUSE_WEB_PORT:-3000}:3000"
+    expose:
+      - "3000"
     # 同样走 wrapper entrypoint，末尾写死 web 的原始启动命令（见镜像 Dockerfile 的 CMD）
     entrypoint:
       - /bin/sh
@@ -760,17 +678,15 @@ services:
       LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-}
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-}
     networks:
-      - WeKnora-network
-    profiles:
-      - langfuse
-      - full
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.31
 
   mcp:
     build:
       context: ./mcp-server
     container_name: WeKnora-mcp
-    ports:
-      - "${MCP_PORT:-8082}:8000"
+    expose:
+      - "8000"
     environment:
       - WEKNORA_BASE_URL=http://app:8080/api/v1
       - WEKNORA_API_KEY=${WEKNORA_API_KEY:-}
@@ -778,24 +694,17 @@ services:
       app:
         condition: service_healthy
     networks:
-      - WeKnora-network
+      WeKnora:
+        ipv4_address: ${SUBNET_PREFIX}.32
     restart: unless-stopped
     profiles:
       - full
 
-networks:
-  WeKnora-network:
-    driver: bridge
-
 volumes:
-  postgres-data:
   data-files:
   docreader-tmp:
-  minio_data:
+  postgres-data:
   neo4j-data:
-  qdrant_data:
-  milvus_data:
-  weaviate_data:
   doris_fe_meta:
   doris_fe_log:
   doris_be_storage:
