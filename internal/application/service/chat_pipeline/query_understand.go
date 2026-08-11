@@ -114,7 +114,8 @@ func (p *PluginQueryUnderstand) OnEvent(ctx context.Context,
 
 	// --- Call model ---
 	thinking := false
-	response, err := rewriteModel.Chat(ctx, []chat.Message{
+	modelCtx := types.WithLLMCallMetadata(ctx, "query_rewrite", "")
+	response, err := rewriteModel.Chat(modelCtx, []chat.Message{
 		{Role: "system", Content: systemContent},
 		userMsg,
 	}, &chat.ChatOptions{
@@ -333,11 +334,7 @@ func (p *PluginQueryUnderstand) parseOutput(chatManage *types.ChatManage, raw st
 		return
 	}
 
-	// If JSON parsing failed entirely, treat the raw text as the rewritten query
-	// and default to IntentKBSearch for safety.
-	if content != "" {
-		chatManage.RewriteQuery = content
-	}
+	// On parse failure, keep the original query and intent.
 }
 
 func parseStructuredQueryOutput(raw string) (queryUnderstandOutput, bool) {

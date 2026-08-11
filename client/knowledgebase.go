@@ -30,6 +30,7 @@ type KnowledgeBase struct {
 	StorageProviderConfig *StorageProviderConfig `json:"storage_provider_config"`
 	StorageConfig         StorageConfig          `json:"storage_config"`
 	ExtractConfig         *ExtractConfig         `json:"extract_config"`
+	AutoTagConfig         *AutoTagConfig         `json:"auto_tag_config"`
 	CreatedAt             time.Time              `json:"created_at"`
 	UpdatedAt             time.Time              `json:"updated_at"`
 	// Computed fields (not stored in database)
@@ -44,6 +45,7 @@ type KnowledgeBaseConfig struct {
 	ChunkingConfig        ChunkingConfig        `json:"chunking_config"`
 	ImageProcessingConfig ImageProcessingConfig `json:"image_processing_config"`
 	FAQConfig             *FAQConfig            `json:"faq_config"`
+	AutoTagConfig         *AutoTagConfig        `json:"auto_tag_config,omitempty"`
 }
 
 // ChunkingConfig represents document chunking configuration
@@ -118,6 +120,22 @@ type ParserEngineRule struct {
 type QuestionGenerationConfig struct {
 	Enabled       bool `json:"enabled"`
 	QuestionCount int  `json:"question_count"`
+}
+
+// AutoTagConfig controls optional automatic association of existing knowledge
+// base tags after a document finishes parsing. Only applies to document-type
+// knowledge bases; disabled by default.
+type AutoTagConfig struct {
+	Enabled bool `json:"enabled"`
+	// ModelID selects the chat model used for classification. Empty falls
+	// back to the knowledge base's summary model.
+	ModelID string `json:"model_id,omitempty"`
+	// MaxTags caps how many existing tags one document may auto-acquire
+	// (1-10, defaults to 3).
+	MaxTags int `json:"max_tags,omitempty"`
+	// SkipIfTagged leaves documents that already carry tags untouched.
+	// Defaults to true when omitted.
+	SkipIfTagged *bool `json:"skip_if_tagged,omitempty"`
 }
 
 // ASRConfig represents automatic speech recognition settings for audio files.
@@ -239,6 +257,13 @@ type CopyKnowledgeBaseResponse struct {
 	SourceID string `json:"source_id"`
 	TargetID string `json:"target_id"`
 	Message  string `json:"message"`
+}
+
+type DuplicateKnowledgeBaseResponse struct {
+	SourceID      string        `json:"source_id"`
+	TargetID      string        `json:"target_id"`
+	Message       string        `json:"message"`
+	KnowledgeBase KnowledgeBase `json:"knowledge_base"`
 }
 
 // KBCloneProgress represents the progress of a knowledge base clone task
@@ -453,6 +478,30 @@ func (c *Client) CopyKnowledgeBase(ctx context.Context, request *CopyKnowledgeBa
 	var response struct {
 		Success bool                      `json:"success"`
 		Data    CopyKnowledgeBaseResponse `json:"data"`
+	}
+
+	if err := parseResponse(resp, &response); err != nil {
+		return nil, err
+	}
+
+	return &response.Data, nil
+}
+
+// DuplicateKnowledgeBase creates a settings-only duplicate and returns the new knowledge base info.
+func (c *Client) DuplicateKnowledgeBase(
+	ctx context.Context,
+	knowledgeBaseID string,
+) (*DuplicateKnowledgeBaseResponse, error) {
+	path := fmt.Sprintf("/api/v1/knowledge-bases/%s/duplicate", knowledgeBaseID)
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Success bool                           `json:"success"`
+		Data    DuplicateKnowledgeBaseResponse `json:"data"`
 	}
 
 	if err := parseResponse(resp, &response); err != nil {

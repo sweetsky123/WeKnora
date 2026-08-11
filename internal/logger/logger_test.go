@@ -19,6 +19,22 @@ func newEntry(level logrus.Level, msg string, data logrus.Fields) *logrus.Entry 
 	return e
 }
 
+func TestAnsiStripWriter(t *testing.T) {
+	var buf strings.Builder
+	w := &ansiStripWriter{w: &buf}
+	in := []byte("\x1b[32mINFO\x1b[0m hello \x1b[31mERROR\x1b[0m")
+	n, err := w.Write(in)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	if n != len(in) {
+		t.Fatalf("Write n = %d, want %d", n, len(in))
+	}
+	if got := buf.String(); got != "INFO hello ERROR" {
+		t.Fatalf("stripped output = %q, want %q", got, "INFO hello ERROR")
+	}
+}
+
 func TestFormat_DefaultModeUnchanged(t *testing.T) {
 	f := &CustomFormatter{} // no template, no color
 	entry := newEntry(logrus.InfoLevel, "hello", logrus.Fields{
@@ -194,5 +210,24 @@ func TestCloneContextPreservesTenantAPIKeyScope(t *testing.T) {
 	}
 	if got.KeyID != want.KeyID || !got.AllowsKnowledgeBase("kb-1") || got.AllowsKnowledgeBase("kb-2") {
 		t.Fatalf("cloned scope = %#v, want key_id=7 scoped to kb-1", got)
+	}
+}
+
+// setupSSEStream builds its async context through CloneContext, so dropping
+// this key here would silently re-key every session→sandbox binding onto the
+// tenant a shared agent borrowed — stranding the MicroVM at session deletion.
+func TestCloneContextPreservesSandboxTenantID(t *testing.T) {
+	t.Parallel()
+
+	const sessionOwner, agentOwner = uint64(7), uint64(99)
+
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, agentOwner)
+	ctx = types.WithSandboxTenantID(ctx, sessionOwner)
+	cloned := CloneContext(ctx)
+
+	got, ok := types.SandboxTenantIDFromContext(cloned)
+	if !ok || got != sessionOwner {
+		t.Fatalf("SandboxTenantIDFromContext(cloned) = (%d, %v), want (%d, true)",
+			got, ok, sessionOwner)
 	}
 }
